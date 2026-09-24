@@ -1,0 +1,69 @@
+name: Python CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+ 
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+ 
+      - name: Flake8 linting
+        run: flake8 src tests scripts
+
+      - name: Black formatting check
+        run: black --check src tests scripts
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest             --cov=src             --cov-report=term-missing             --cov-report=xml:coverage.xml             --cov-report=html:htmlcov             --cov-fail-under=90
+
+      - name: Bandit security scan
+        run: bandit -r src scripts -x tests
+
+      - name: Dependency vulnerability scan
+        run: pip-audit
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+          if-no-files-found: ignore
+
+      - name: Send CI email
+        if: always()
+        continue-on-error: true
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          CI_EMAIL_RECIPIENT: ${{ secrets.CI_EMAIL_RECIPIENT }}
+          CI_STATUS: ${{ job.status }}
+        run: python scripts/send_ci_email.py
