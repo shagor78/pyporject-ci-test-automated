@@ -1,78 +1,79 @@
-import os
-import smtplib
-from email.message import EmailMessage
+name: Python CI
 
+on:
+  push:
+    branches:
+      - main
+      - master
 
-def required_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Required environment variable is missing: {name}")
-    return value
+  pull_request:
+    branches:
+      - main
+      - master
 
+  workflow_dispatch:
 
-def main() -> None:
-    smtp_server = required_env("SMTP_SERVER")
-    smtp_port = int(required_env("SMTP_PORT"))
-    smtp_username = required_env("SMTP_USERNAME")
-    smtp_password = required_env("SMTP_PASSWORD")
-    recipient = required_env("CI_EMAIL_RECIPIENT")
+jobs:
+  ci:
+    runs-on: ubuntu-latest
 
-    status = os.getenv("CI_STATUS", "unknown")
-    repository = os.getenv("GITHUB_REPOSITORY", "unknown repository")
-    workflow = os.getenv("GITHUB_WORKFLOW", "CI")
-    branch = os.getenv("GITHUB_REF_NAME", "unknown")
-    commit_sha = os.getenv("GITHUB_SHA", "unknown")
-    actor = os.getenv("GITHUB_ACTOR", "unknown")
-    server_url = os.getenv("GITHUB_SERVER_URL", "https://github.com")
-    run_id = os.getenv("GITHUB_RUN_ID", "")
+    permissions:
+      contents: read
 
-    run_url = (
-        f"{server_url}/{repository}/actions/runs/{run_id}"
-        if run_id
-        else f"{server_url}/{repository}/actions"
-    )
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    if status == "success":
-        subject = f"✅ CI Passed — {repository}"
-        headline = "The GitHub Actions CI pipeline completed. :)"
-    else:
-        subject = f"❌ CI Failed — {repository}"
-        headline = f"The GitHub Actions CI pipeline finished : {status} :(."
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
 
-    body = f"""\
-{headline}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
 
-Repository: {repository}
-Workflow:   {workflow}
-Branch:     {branch}
-Commit:     {commit_sha}
-Triggered by: {actor}
+      - name: Flake8 linting
+        run: flake8 src tests scripts
 
-Checks:
-- Flake8 linting
-- Black formatting check
-- Pytest unit tests
-- Coverage
-- Bandit security scan
-- pip-audit dependency scan
+      - name: Black formatting check
+        run: black --check src tests scripts
 
-Workflow details:
-{run_url}
-"""
+      - name: Run unit tests with coverage
+        run: |
+          pytest \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-report=html:htmlcov \
+            --cov-fail-under=90
 
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = smtp_username
-    message["To"] = recipient
-    message.set_content(body)
+      - name: Bandit security scan
+        run: bandit -r src scripts -x tests
 
-    with smtplib.SMTP(smtp_server, smtp_port, timeout=30) as smtp:
-        smtp.starttls()
-        smtp.login(smtp_username, smtp_password)
-        smtp.send_message(message)
+      - name: Dependency vulnerability scan
+        run: pip-audit
 
-    print(f"CI notification sent to {recipient}")
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+          if-no-files-found: ignore
 
-
-if __name__ == "__main__":
-    main()
+      - name: Send CI email
+        if: always()
+        continue-on-error: true
+        env:
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          CI_EMAIL_RECIPIENT: ${{ secrets.CI_EMAIL_RECIPIENT }}
+          CI_STATUS: ${{ job.status }}
+        run: python scripts/send_ci_email.py
